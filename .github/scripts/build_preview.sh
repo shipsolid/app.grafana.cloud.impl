@@ -4,8 +4,8 @@ command -v gh >/dev/null || { echo "gh CLI is required"; exit 1; }
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 
 GH_TOKEN="${GH_TOKEN:?GH_TOKEN not set}"
-SCOPE="${SCOPE:-}"
-OWNER="${OWNER:-}"
+SCOPE="${SCOPE:-user}"
+OWNER="${OWNER:-shipsolid}"
 PKG_FILTER="${PKG_FILTER:-}"
 KEEP_LATEST="${KEEP_LATEST:-0}"
 OLDER_THAN_DAYS="${OLDER_THAN_DAYS:-0}"
