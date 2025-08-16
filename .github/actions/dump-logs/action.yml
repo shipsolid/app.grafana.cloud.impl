@@ -1,0 +1,138 @@
+name: Logs
+description: Dump logs from all services
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      name: Dump Logs
+      run: |
+        set -e
+        
+        echo "::group::Docker logs alloy-agent"
+        docker logs alloy-agent || true
+        echo "::endgroup::"
+
+        echo "::group::Docker logs fakestore-api"
+        docker logs fakestore-api || true
+        echo "::endgroup::"
+
+        echo "::group::Check Products from API"
+        docker run --rm --network observability curlimages/curl:8.8.0 \
+          curl -sSf http://fakestore-api:5171/products
+        echo "::endgroup::"
+
+        echo "::group::Check Metrics from API - fakestore-api"
+        docker run --rm --network observability curlimages/curl:8.8.0 \
+          curl -sSf http://fakestore-api:5171/metrics
+        echo "::endgroup::"
+
+      # echo "::group::DNS & TCP sanity"
+      # # Prove DNS and port 5171 work
+      # docker run --rm --network observability busybox nslookup fakestore-api || true
+      # docker run --rm --network observability curlimages/curl:8.8.0 -sS -o /dev/null fakestore-api:5171 || true
+      # echo "::endgroup::"
+
+      # echo "::group::Check Metrics from API - fakestore-api"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      #   -sS -D - -o /dev/null http://fakestore-api:5171/api/metrics || true
+      # echo "::endgroup::"
+
+      # echo "::group::Check Metrics from API - fakestore-api"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      #   -sS -D - -o /dev/null http://fakestore-api:5171/prometheus/metrics || true
+      # echo "::endgroup::"
+
+      # echo "::group::Check Metrics from API - fakestore-api - EXEC"
+      # # docker exec fakestore-api curl -v http://127.0.0.1:5171/metrics
+      # docker exec fakestore-api wget -qO- http://127.0.0.1:5171/metrics
+      # echo "::endgroup::"
+
+      # Not Working
+      # echo "::group::Check Metrics from API - 127.0.0.1"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      #   curl -sS http://127.0.0.1:5171/metrics
+      # echo "::endgroup::"
+
+      # Not Working
+      # echo "::group::Check Metrics from API - localhost"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      #   curl -sS http://localhost:5171/metrics
+      # echo "::endgroup::"
+
+      # # Require 200 with retries; print API logs if it fails
+      # for i in {1..30}; do
+      #   CODE=$(docker run --rm --network observability curlimages/curl:8.8.0 -s -o /dev/null -w '%{http_code}' http://fakestore-api:5171/metrics || true)
+      #   if [ "$CODE" = "200" ]; then
+      #     echo "✅ /metrics OK"
+      #     echo "::endgroup::"
+      #     exit 0
+      #   fi
+      #   echo "⏳ Waiting for /metrics ($i/30), got HTTP $CODE"
+      #   sleep 2
+      # done
+
+      # echo "❌ /metrics not healthy; dumping API logs"
+      # docker logs fakestore-api || true
+      # echo "::endgroup::"
+
+      # - shell: bash
+      #   name: Check /metrics from host
+      #   run: |
+      #     set -euo pipefail
+      #     URL="http://127.0.0.1:5171/metrics"
+      #     # show one header dump for debugging
+      #     curl -sS -D - -o /dev/null "$URL" || true
+      #     # require 200 with retries
+      #     for i in {1..30}; do
+      #       code=$(curl -s -o /dev/null -w '%{http_code}' "$URL")
+      #       if [ "$code" = "200" ]; then echo "✅ /metrics OK"; exit 0; fi
+      #       echo "⏳ Waiting for /metrics ($i/30) — got $code"; sleep 2
+      #     done
+      #     echo "❌ /metrics not healthy"; docker logs fakestore-api || true;
+
+      # - name: Inspect
+      #   shell: bash
+      #   run: |
+      #     docker inspect -f '{{json .NetworkSettings.Networks}}' fakestore-api
+      #     docker inspect -f '{{json .NetworkSettings.Networks}}' fakestore-mock
+      #     docker inspect -f '{{json .NetworkSettings.Networks}}' alloy-agent
+      #     docker inspect -f '{{json .NetworkSettings.Networks}}' mysql
+
+
+      # echo "::group::Check Metrics from Alloy Agent"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      # curl -sSf http://alloy-agent:12345/metrics
+      # echo "::endgroup::"
+
+      # echo "::group::Check Health from Alloy Agent"
+      # docker run --rm --network observability curlimages/curl:8.8.0 \
+      # curl -sSf http://alloy-agent:12345/health
+      # echo "::endgroup::"
+
+    # - name: Wait for /metrics (via Docker network)
+    #   shell: bash
+    #   run: |
+    #     set -euo pipefail
+    #     NET=observability
+    #     URL=http://fakestore-api:5171/metrics
+    #     MAX=60
+    #     SLEEP=2
+
+    #     echo "::group::/metrics header (first attempt)"
+    #     docker run --rm --network "$NET" curlimages/curl:8.8.0 -sS -D - -o /dev/null "$URL" || true
+    #     echo "::endgroup::"
+
+    #     for i in $(seq 1 $MAX); do
+    #       CODE=$(docker run --rm --network "$NET" curlimages/curl:8.8.0 -s -o /dev/null -w '%{http_code}' "$URL" || echo 000)
+    #       if [ "$CODE" = "200" ]; then
+    #         echo "✅ /metrics ready (HTTP 200) on attempt $i"
+    #         exit 0
+    #       fi
+    #       echo "⏳ /metrics not ready yet (HTTP $CODE) — attempt $i/$MAX"
+    #       sleep $SLEEP
+    #     done
+
+    #     echo "❌ /metrics never reached 200 — dumping API logs"
+    #     docker logs fakestore-api || true
+    #     exit 1
+

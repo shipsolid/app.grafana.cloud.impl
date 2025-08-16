@@ -1,0 +1,103 @@
+name: Load test
+
+on:
+  workflow_dispatch:
+  # push:
+  #   paths:
+  #     - '.github/workflows/main.yml'  # Trigger on changes to this workflow file
+  #     - '.github/actions/**'  # Trigger on changes in the MySQL action
+  #     - 'dotnet.FakeStoreIngestor/**'  # Trigger on changes in the dotnet.FakeStoreIngestor directory
+  #     - '.github/workflows/fake-store-ingestor-dockerize.yml'  # Trigger on changes to this workflow file
+  #   branches: [ main ]
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Authenticate to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create Network
+        run: docker network create observability
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for MySQL
+        uses: ./.github/actions/mysql
+
+      - name: Mock Service
+        uses: ./.github/actions/fakestore-mock
+
+      - name: Wait for API
+        uses: ./.github/actions/fakestore-api
+
+      - name: Start Monitoring Grafana Alloy Agent
+        uses: ./.github/actions/grafana-alloy
+        with:
+          network: observability
+          image: ghcr.io/${{ github.repository_owner }}/myalloy:config-1
+          otlp_endpoint: ${{ secrets.GRAFANA_OTLP_ENDPOINT }}
+          otlp_username: ${{ secrets.GRAFANA_OTLP_USERNAME }}
+          otlp_password: ${{ secrets.GRAFANA_OTLP_PASSWORD }}
+          rw_url:        ${{ secrets.GRAFANA_RW_URL }}
+          rw_username:   ${{ secrets.GRAFANA_RW_USERNAME }}
+          rw_password:   ${{ secrets.GRAFANA_RW_PASSWORD }}
+
+      - name: Test API
+        uses: ./.github/actions/test
+
+      - name: Load Test API
+        uses: ./.github/actions/load-test
+
+      - name: Dump Logs
+        uses: ./.github/actions/dump-logs
+
+
+
+    # services:
+    #   mysql:
+    #     image: mysql:8.0
+    #     env:
+    #       MYSQL_ROOT_PASSWORD: rootpass
+    #       MYSQL_DATABASE: fakestore
+    #       MYSQL_USER: appuser
+    #       MYSQL_PASSWORD: apppass
+    #     ports:
+    #       - 3306:3306
+    #     options: >-
+    #       --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -prootpass"
+    #       --health-interval=10s
+    #       --health-timeout=5s
+    #       --health-retries=20
+
+      # fakestore-mock:
+      #   image: ghcr.io/${{ github.repository_owner }}/fakestore-mock:latest
+      #   ports:
+      #     - 3000:3000
+      #   options: >-
+      #     --health-cmd="wget -qO- http://127.0.0.1:3000/products > /dev/null || exit 1"
+      #     --health-interval=5s
+      #     --health-timeout=3s
+      #     --health-retries=20
+      #     --health-start-period=10s
+
+      # fakestore-api:
+      #   image: ghcr.io/${{ github.repository_owner }}/fakestore-api:latest
+      #   credentials:
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+      #   env:
+      #     ASPNETCORE_URLS: http://0.0.0.0:5171
+      #     # ConnectionStrings__Default: Server=127.0.0.1;Port=3306;Database=fakestore;User=appuser;Password=apppass;TreatTinyAsBoolean=false;DefaultCommandTimeout=30
+      #     ConnectionStrings__Default: Server=mysql;Port=3306;Database=fakestore;User=appuser;Password=apppass;TreatTinyAsBoolean=false;DefaultCommandTimeout=30
+      #     Ingest__BaseUrl: "http://fakestore-mock:3000/"
+      #     Ingest__ProductsEndpoint: "products"
+      #   ports:
+      #     - 5171:5171
+      #   options: >-
+      #     --health-cmd="curl -f http://127.0.0.1:5171/health || exit 1"
+      #     --health-interval=10s
+      #     --health-timeout=5s
+      #     --health-retries=20

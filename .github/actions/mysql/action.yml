@@ -1,0 +1,52 @@
+name: Start MySQL
+description: Start MySQL and wait until it's ready
+inputs:
+  network:
+    description: The Docker network to use
+    required: true
+    default: observability
+  db:
+    description: The name of the MySQL database to create
+    default: fakestore
+  user:
+    description: The MySQL user to create
+    default: appuser
+  pass:
+    description: The password for the MySQL user
+    default: apppass
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -e
+
+        # Start clean: remove old container + data volume
+        docker rm -f mysql >/dev/null 2>&1 || true
+        docker volume rm -f mysql-data >/dev/null 2>&1 || true
+        docker volume create mysql-data >/dev/null
+
+        docker run -d --name mysql \
+          --network observability \
+          -p 3306:3306 \
+          -v mysql-data:/var/lib/mysql \
+          -e MYSQL_DATABASE=fakestore \
+          -e MYSQL_USER=appuser \
+          -e MYSQL_PASSWORD=apppass \
+          -e MYSQL_ROOT_PASSWORD=rootpass \
+          mysql:8.4
+
+        # Wait for MySQL from inside the container
+        for i in {1..40}; do
+          if docker exec mysql mysqladmin ping -h127.0.0.1 -uappuser -papppass --silent; then
+            echo "MySQL is up!"
+            break
+          fi
+          echo "Waiting for MySQL ($i/40)..."
+          sleep 2
+          if [ $i -eq 40 ]; then
+            echo "MySQL failed to start; printing logs"
+            docker logs mysql || true
+            exit 1
+          fi
+        done

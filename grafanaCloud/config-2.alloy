@@ -1,0 +1,68 @@
+logging {
+  level  = "debug"
+  format = "json"
+}
+
+otelcol.receiver.otlp "default" {
+  // configures the default grpc endpoint "0.0.0.0:4317"
+  grpc { }
+  // configures the default http/protobuf endpoint "0.0.0.0:4318"
+  http { }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.otlphttp.grafana_cloud.input]
+    logs    = [otelcol.exporter.otlphttp.grafana_cloud.input]
+    traces  = [otelcol.exporter.otlphttp.grafana_cloud.input]
+  }
+}
+
+otelcol.exporter.otlphttp "grafana_cloud" {
+  client {
+    endpoint = env("GRAFANA_OTLP_ENDPOINT")
+    auth     = otelcol.auth.basic.grafana_cloud.handler
+  }
+}
+
+otelcol.auth.basic "grafana_cloud" {
+  username = env("GRAFANA_OTLP_USERNAME")
+  password = env("GRAFANA_OTLP_PASSWORD")
+}
+
+// Metrics Config
+
+prometheus.scrape "default" {
+  targets = [
+    {"__address__" = "fakestore-api:5171"},
+  ]
+  forward_to = [prometheus.relabel.remove_prefix.receiver]
+  scrape_interval = "10s"
+  metrics_path    = "/metrics"
+}
+
+prometheus.relabel "remove_prefix" {
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+  rule {
+    target_label = "host_name"
+    replacement  = constants.hostname
+  }
+}
+
+prometheus.remote_write "grafanacloud" {
+  endpoint {
+    name = "hosted-prometheus"
+    url  = env("GRAFANA_RW_URL")
+
+    basic_auth {
+      username = env("GRAFANA_RW_USERNAME")
+      password = env("GRAFANA_RW_PASSWORD")
+    }
+  }
+}

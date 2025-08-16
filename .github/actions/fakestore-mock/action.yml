@@ -1,0 +1,37 @@
+name: Start Fake Store Mock Service
+description: Start Fake Store Mock Service and wait until it's ready
+inputs:
+  network:
+    description: Network to connect the mock service to
+    required: true
+    default: observability
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -e
+
+        # Replace any existing mock
+        docker rm -f fakestore-mock >/dev/null 2>&1 || true
+
+        # Start mock on the network (no host port publish needed)
+        docker run -d --name fakestore-mock \
+          --network observability \
+          ghcr.io/shipsolid/fakestore-mock:latest
+
+        # Wait for mock to be reachable on the network
+        for i in {1..60}; do
+          if docker run --rm --network observability curlimages/curl:8.8.0 \
+            curl -sf http://fakestore-mock:3000/products > /dev/null; then
+            echo "Mock service is up!"
+            break
+          fi
+          echo "Waiting for mock service ($i/60)..."
+          sleep 2
+          if [ $i -eq 60 ]; then
+            echo "fakestore-mock failed to start; printing container logs"
+            docker logs fakestore-mock || true
+            exit 1
+          fi
+        done

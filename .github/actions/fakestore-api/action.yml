@@ -1,0 +1,62 @@
+name: Start Fake Store API
+description: Start Fake Store API and wait until it's ready
+inputs:
+  network:
+    description: Network to connect the API to
+    required: true
+    default: observability
+  db:
+    description: Database to connect to
+    default: fakestore
+  user:
+    description: Database user
+    default: appuser
+  pass:
+    description: Database password
+    default: apppass
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ASPNETCORE_URLS: http://0.0.0.0:5171/
+        # NOTE: point to the MySQL container by name on the docker network
+        ConnectionStrings__Default: Server=mysql;Port=3306;Database=fakestore;User=appuser;Password=apppass;TreatTinyAsBoolean=false;DefaultCommandTimeout=30
+        # NOTE: point to your mock by service name on the docker network
+        Ingest__BaseUrl: http://fakestore-mock:3000/
+        Ingest__ProductsEndpoint: products
+      run: |
+        set -e
+
+        # # (Optional) make sure the mock is running on the same network
+        # if ! docker ps --format '{{.Names}}' | grep -q '^fakestore-mock$'; then
+        #   echo "Starting fakestore-mock..."
+        #   docker rm -f fakestore-mock >/dev/null 2>&1 || true
+        #   docker run -d --name fakestore-mock --network observability ghcr.io/shipsolid/fakestore-mock:latest
+        # fi
+
+        # Start/replace API on the network
+        docker rm -f fakestore-api >/dev/null 2>&1 || true
+        docker run -d --name fakestore-api \
+          --network observability \
+          -p 5171:5171 \
+          -e ASPNETCORE_URLS="$ASPNETCORE_URLS" \
+          -e ConnectionStrings__Default="$ConnectionStrings__Default" \
+          -e Ingest__BaseUrl="$Ingest__BaseUrl" \
+          -e Ingest__ProductsEndpoint="$Ingest__ProductsEndpoint" \
+          ghcr.io/${GITHUB_REPOSITORY_OWNER}/fakestore-api:latest
+
+        # Wait for API health from host (port exposed)
+        for i in {1..40}; do
+          if curl -sf http://127.0.0.1:5171/products > /dev/null; then
+            echo "API is up!"
+            break
+          fi
+          echo "Waiting for API ($i/40)..."
+          sleep 2
+          if [ $i -eq 40 ]; then
+            echo "API failed to start; printing container logs"
+            docker logs fakestore-api || true
+            exit 1
+          fi
+        done

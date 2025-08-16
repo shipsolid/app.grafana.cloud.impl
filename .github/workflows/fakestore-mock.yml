@@ -1,0 +1,64 @@
+name: Mock Data and Dockerize
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fakestore-mock.yml'  # Trigger on changes to this workflow file
+      - 'fakestore-mock/**'
+  #   branches: [ main ]
+
+jobs:
+  mock-svc:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write  # Allow write access to packages (for pushing Docker images)
+
+    defaults:
+      run:
+        working-directory: fakestore-mock
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # cp ${{ matrix.config }} config.alloy
+      - name: Dockerize
+        run: |
+          docker buildx build --push -t ghcr.io/${{ github.repository_owner }}/fakestore-mock:latest .
+
+      - name: Run Container for Verification
+        run: |
+          docker run -d --name mock-fakestore -p 3000:3000 \
+            ghcr.io/${{ github.repository_owner }}/fakestore-mock:latest
+
+          # Wait for HTTP to respond (up to ~40s)
+          for i in {1..40}; do
+            if curl -sf http://localhost:3000/products >/dev/null; then
+              echo "Mock service is up!"
+              break
+            fi
+            echo "Waiting for Mock Service ($i/40)..."
+            sleep 2
+            if [ $i -eq 40 ]; then
+              echo "Mock failed to start; printing container logs"
+              docker logs mock-fakestore || true
+              exit 1
+            fi
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop mock-fakestore || true
+          docker rm mock-fakestore || true

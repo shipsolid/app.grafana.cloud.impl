@@ -1,0 +1,117 @@
+name: Grafana-Alloy-Image-Push
+
+on:
+  workflow_dispatch:  # Allows manual triggering of the workflow
+
+  # push:
+  #   paths:
+  #   - 'grafanaCloud/**'  # Trigger on changes in the grafanaCloud directory
+  #   - '.github/workflows/grafanaCloud.yml'  # Trigger on changes to this workflow file
+  #   branches:
+  #     - main  # Runs only when pushing to main branch
+  #     - '**'  # Runs on push to any branch
+
+jobs:
+  build:
+    name: Dockerize and Push
+    runs-on: ubuntu-latest
+
+    permissions:
+      # contents: read  # Allow read access to the repository contents
+      packages: write  # Allow write access to packages (for pushing Docker images)
+      # id-token: write  # Allow writing ID tokens for authentication
+
+    defaults:
+      run:
+        working-directory: grafanaCloud
+
+    strategy:
+      matrix:
+        config:
+          - config-1.alloy
+          - config-2.alloy
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Use latest version
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0  # needed for versioning/tag lookup
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dockerize
+        run: |
+          cp ${{ matrix.config }} config.alloy
+          docker buildx build --push -t ghcr.io/${{ github.repository_owner }}/myalloy:${{ matrix.config }} .
+
+      # - name: Run Container for Verification
+      #   run: |
+      #     docker run -d --name test -p 12345:12345 ghcr.io/${{ github.repository_owner }}/myalloy:latest
+      #     sleep 10  # Give it time to start
+      #     docker logs test
+
+      - name: Run Container for Verification
+        env:
+          # Secrets from GitHub → Settings → Secrets and variables → Actions
+          GRAFANA_OTLP_ENDPOINT: ${{ secrets.GRAFANA_OTLP_ENDPOINT }}
+          GRAFANA_OTLP_USERNAME: ${{ secrets.GRAFANA_OTLP_USERNAME }}
+          GRAFANA_OTLP_PASSWORD: ${{ secrets.GRAFANA_OTLP_PASSWORD }}
+          GRAFANA_RW_URL:        ${{ secrets.GRAFANA_RW_URL }}
+          GRAFANA_RW_USERNAME:   ${{ secrets.GRAFANA_RW_USERNAME }}
+          GRAFANA_RW_PASSWORD:   ${{ secrets.GRAFANA_RW_PASSWORD }}
+        run: |
+          set -e
+
+          # Ensure config exists (adjust path to your file)
+          # test -f "./etc/alloy/config.alloy" || { echo "Missing ./etc/alloy/config.alloy"; exit 1; }
+
+          # Start container WITHOUT --rm so we can fetch logs even if it crashes
+          docker rm -f test-${{ matrix.config }} >/dev/null 2>&1 || true
+          docker run -d --name test-${{ matrix.config }} \
+            -v "/var/run/docker.sock:/var/run/docker.sock:ro" \
+            -p 12345:12345 \
+            -p 4317:4317 \
+            -p 4318:4318 \
+            -e GRAFANA_OTLP_ENDPOINT="$GRAFANA_OTLP_ENDPOINT" \
+            -e GRAFANA_OTLP_USERNAME="$GRAFANA_OTLP_USERNAME" \
+            -e GRAFANA_OTLP_PASSWORD="$GRAFANA_OTLP_PASSWORD" \
+            -e GRAFANA_RW_URL="$GRAFANA_RW_URL" \
+            -e GRAFANA_RW_USERNAME="$GRAFANA_RW_USERNAME" \
+            -e GRAFANA_RW_PASSWORD="$GRAFANA_RW_PASSWORD" \
+            ghcr.io/${{ github.repository_owner }}/myalloy:${{ matrix.config }}
+
+            # --config.file=/etc/alloy/config.river
+            # --server.http.listen-addr=0.0.0.0:12345
+            # -v "$GITHUB_WORKSPACE/alloy/config.river:/etc/alloy/config.river:ro"
+
+          # Wait for HTTP to respond (up to ~40s)
+          for i in {1..40}; do
+            if curl -sf http://localhost:12345/health >/dev/null; then
+              echo "Container is healthy ✅"
+              break
+            fi
+            # If the container died, show logs and fail fast
+            if [ "$(docker inspect -f '{{.State.Running}}' test-${{ matrix.config }} 2>/dev/null)" != "true" ]; then
+              echo "Container exited early — showing logs:"
+              docker logs test-${{ matrix.config }} || true
+              exit 1
+            fi
+            echo "Waiting for service on :12345 ..."
+            sleep 1
+          done
+
+          # Optional: show last lines of logs
+          docker logs --tail 50 test-${{ matrix.config }} || true
+
+      - name: Cleanup container
+        if: always()
+        run: docker rm -f test-${{ matrix.config }} || true

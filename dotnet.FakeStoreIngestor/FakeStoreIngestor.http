@@ -1,0 +1,6 @@
+@FakeStoreIngestor_HostAddress = http://localhost:5171
+
+GET {{FakeStoreIngestor_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

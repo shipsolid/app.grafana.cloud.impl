@@ -1,0 +1,14 @@
+name: Test the API's
+description: Test the API's functionality after starting the services
+runs:
+  using: composite
+  steps:
+    - name: Quick load test (Read one)
+      shell: bash
+      run: |
+        for i in {1..50}; do
+          echo "Request #$i"
+          curl -sS 'http://127.0.0.1:5171/products/1' | jq . || true
+          sleep 0.2  # 200ms delay between requests, adjust as needed
+        done
+        sleep 30  # Allow time for Alloy to process

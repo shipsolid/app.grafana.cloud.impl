@@ -1,0 +1,10 @@
+{
+  "products": [
+    { "id": 1, "title": "Mock 1", "price": 10, "description": "d", "category": "c", "image": "i", "rating": { "rate": 4.2, "count": 10 } },
+    { "id": 2, "title": "Mock 2", "price": 20, "description": "d", "category": "c", "image": "i", "rating": { "rate": 3.9, "count": 5 } },
+    { "id": 3, "title": "Mock 3", "price": 30, "description": "d", "category": "c", "image": "i", "rating": { "rate": 4.8, "count": 7 } },
+    { "id": 4, "title": "Mock 4", "price": 40, "description": "d", "category": "c", "image": "i", "rating": { "rate": 4.1, "count": 3 } },
+    { "id": 5, "title": "Mock 5", "price": 50, "description": "d", "category": "c", "image": "i", "rating": { "rate": 3.5, "count": 12 } },
+    { "id": 6, "title": "Mock 6", "price": 60, "description": "d", "category": "c", "image": "i", "rating": { "rate": 4.9, "count": 2 } }
+  ]
+}

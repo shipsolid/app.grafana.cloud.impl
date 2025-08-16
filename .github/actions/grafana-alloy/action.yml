@@ -1,0 +1,52 @@
+name: Start Grafana Alloy Agent
+description: Start Grafana Alloy Agent and wait until it's ready
+inputs:
+  network:         { required: true, default: observability, description: 'Docker network to use for Alloy Agent' }
+  image:           { required: true, description: 'Docker image for Alloy Agent' }
+  otlp_endpoint:   { required: true, description: 'OTLP endpoint for Alloy Agent' }
+  otlp_username:   { required: true, description: 'OTLP username for Alloy Agent' }
+  otlp_password:   { required: true, description: 'OTLP password for Alloy Agent' }
+  rw_url:          { required: true, description: 'Read/Write URL for Alloy Agent' }
+  rw_username:     { required: true, description: 'Read/Write username for Alloy Agent' }
+  rw_password:     { required: true, description: 'Read/Write password for Alloy Agent' }
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        
+        # Optional masking (extra safety)
+        echo "::add-mask::${{ inputs.otlp_password }}"
+        echo "::add-mask::${{ inputs.rw_password }}"
+
+        # Replace any existing Alloy container
+        docker rm -f alloy-agent >/dev/null 2>&1 || true
+
+        # Start Alloy on the shared network (no host port publishes needed)
+        docker run -d --name alloy-agent \
+          --network "${{ inputs.network }}" \
+          -e GRAFANA_OTLP_ENDPOINT="${{ inputs.otlp_endpoint }}" \
+          -e GRAFANA_OTLP_USERNAME="${{ inputs.otlp_username }}" \
+          -e GRAFANA_OTLP_PASSWORD="${{ inputs.otlp_password }}" \
+          -e GRAFANA_RW_URL="${{ inputs.rw_url }}" \
+          -e GRAFANA_RW_USERNAME="${{ inputs.rw_username }}" \
+          -e GRAFANA_RW_PASSWORD="${{ inputs.rw_password }}" \
+          ${{ inputs.image }}
+        # ghcr.io/${GITHUB_REPOSITORY_OWNER}/myalloy:latest
+
+        # Wait for Alloy health endpoint from within the network
+        for i in {1..40}; do
+          if docker run --rm --network "${{ inputs.network }}" curlimages/curl:8.8.0 \
+            curl -sf http://alloy-agent:12345/health > /dev/null; then
+            echo "Alloy Agent is up!"
+            break
+          fi
+          echo "Waiting for Alloy Agent ($i/40)..."
+          sleep 2
+          if [ $i -eq 40 ]; then
+            echo "Alloy Agent failed to start; printing logs"
+            docker logs alloy-agent || true
+            exit 1
+          fi
+        done

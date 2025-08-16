@@ -1,0 +1,19 @@
+name: Test the API's
+description: Test the API's functionality after starting the services
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      name: Import Products
+      run: |
+        curl -sS -X POST 'http://127.0.0.1:5171/import/5' -H 'accept: */*'
+
+    - shell: bash
+      name: Get Product by ID
+      run: |
+        curl -sS 'http://127.0.0.1:5171/products/1' | jq . || true
+
+    - shell: bash
+      name: List Products
+      run: |
+        curl -sS 'http://127.0.0.1:5171/products' | jq '.[0:5]' || true
