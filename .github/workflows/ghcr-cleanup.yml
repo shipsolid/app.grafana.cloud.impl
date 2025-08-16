@@ -39,6 +39,9 @@ on:
         type: string
         required: false
         default: ""
+  push:
+    paths:
+      - '.github/workflows/ghcr-cleanup.yml'
 
 permissions:
   contents: read
@@ -59,11 +62,55 @@ jobs:
         run: |
           gh --version
           jq --version
+      - name: Detect owner endpoint
+        id: detect
+        run: |
+          set -euo pipefail
+          OWNER="${{ inputs.owner }}"
+          SCOPE="${{ inputs.scope }}" # 'user' or 'org'
+
+          if [ "${SCOPE}" = "org" ]; then
+            ENDPOINT_BASE="/orgs/${OWNER}/packages/container"
+            LIST_PATH="/orgs/${OWNER}/packages?package_type=container"
+          else
+            # Try /users/<OWNER> first; if 404, fall back to /user
+            if gh api "/users/${OWNER}/packages?package_type=container" >/dev/null 2>&1; then
+              ENDPOINT_BASE="/users/${OWNER}/packages/container"
+              LIST_PATH="/users/${OWNER}/packages?package_type=container"
+            else
+              ENDPOINT_BASE="/user/packages/container"
+              LIST_PATH="/user/packages?package_type=container"
+            fi
+          fi
+
+          echo "endpoint_base=${ENDPOINT_BASE}" >> "$GITHUB_OUTPUT"
+          echo "list_path=${LIST_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: List packages (debug)
+        run: |
+          gh api "${{ steps.detect.outputs.list_path }}" --jq '.[].name' || {
+            echo "Failed to list packages. Check PAT scopes (read:packages) and SSO enablement."; exit 1; }
 
       - name: List container packages
         id: list
         run: |
           set -euo pipefail
+
+          # Ensure gh uses your PAT
+          : "${GH_TOKEN:?GH_TOKEN not set}"   # will fail fast if missing
+          echo "== Who am I (token owner)?"
+          gh api /user --jq '.login'
+
+          echo "== Try listing as USER (replace $USER_NAME)"
+          USER_NAME="your-username"
+          gh api "/users/${USER_NAME}/packages?package_type=container" --jq '.[].name' || echo "User list failed"
+
+          echo "== Try listing as ORG (replace $ORG_NAME)"
+          ORG_NAME="your-org"
+          gh api "/orgs/${ORG_NAME}/packages?package_type=container" --jq '.[].name' || echo "Org list failed"
+
+          echo "== Try listing as AUTHENTICATED USER"
+          gh api "/user/packages?package_type=container" --jq '.[].name' || echo "/user list failed (token may lack read:packages)"
 
           if [ -z "${OWNER}" ]; then
             echo "ERROR: 'owner' is required." >&2
