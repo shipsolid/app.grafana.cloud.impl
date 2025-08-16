@@ -102,13 +102,11 @@ jobs:
           gh api /user --jq '.login'
 
           echo "== Try listing as USER (replace $USER_NAME)"
-          ME_LOGIN=$(gh api /user --jq .login)
-          USER_NAME=$ME_LOGIN
+          USER_NAME=$(gh api /user --jq .login)
           gh api "/users/${USER_NAME}/packages?package_type=container" --jq '.[].name' || echo "User list failed"
 
           echo "== Try listing as ORG (replace $ORG_NAME)"
-          ME_ID=$(gh api /user --jq .id)
-          ORG_NAME=$ME_ID
+          ORG_NAME=$(gh api /user --jq .id)
           gh api "/orgs/${ORG_NAME}/packages?package_type=container" --jq '.[].name' || echo "Org list failed"
 
           echo "== Try listing as AUTHENTICATED USER"
