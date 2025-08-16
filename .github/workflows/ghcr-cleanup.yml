@@ -158,9 +158,12 @@ jobs:
 
       - name: Resolve package base and list
         id: list
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
 
+          # Build list command
           if [ "${SCOPE}" = "org" ]; then
             PKG_LIST_CMD=(gh api -H "Accept: application/vnd.github+json" --paginate "/orgs/${OWNER}/packages?package_type=container")
             PKG_BASE="/orgs/${OWNER}/packages/container"
@@ -169,55 +172,121 @@ jobs:
             PKG_BASE="/users/${OWNER}/packages/container"
           fi
 
+          # Collect package names (unique)
           mapfile -t PACKAGES < <("${PKG_LIST_CMD[@]}" --jq '.[].name' | sort -u)
-          if [ -n "${PKG_FILTER}" ]; then
-            mapfile -t PACKAGES < <(printf "%s\n" "${PACKAGES[@]}" | grep -i "${PKG_FILTER}" || true)
+
+          # Optional filter (safe under set -u)
+          if [ -n "${PKG_FILTER:-}" ]; then
+            mapfile -t PACKAGES < <(printf "%s\n" "${PACKAGES[@]}" | grep -i -- "${PKG_FILTER}" || true)
           fi
 
           if [ "${#PACKAGES[@]}" -eq 0 ]; then
             echo "No matching packages to delete."
+            # Export empty packages so downstream step can short-circuit
+            echo "packages=" >> "$GITHUB_OUTPUT"
+            echo "PKG_BASE=${PKG_BASE}" >> "$GITHUB_ENV"
             exit 0
           fi
 
           printf "%s\n" "${PACKAGES[@]}" | tee packages.txt
+          {
+            echo "packages<<EOF"
+            printf "%s\n" "${PACKAGES[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # Validate PKG_BASE once using first package; fall back to /user if needed
+          urlenc() { jq -rn --arg v "$1" '$v|@uri'; }
+          first="${PACKAGES[0]}"
+          first_enc="$(urlenc "$first")"
+
+          if ! gh api -H "Accept: application/vnd.github+json" "${PKG_BASE}/${first_enc}/versions?per_page=1" >/dev/null 2>&1; then
+            # Try alternate base paths
+            cand_bases=(
+              "/users/${OWNER}/packages/container"
+              "/user/packages/container"
+              "/orgs/${OWNER}/packages/container"
+            )
+            for b in "${cand_bases[@]}"; do
+              if gh api -H "Accept: application/vnd.github+json" "${b}/${first_enc}/versions?per_page=1" >/dev/null 2>&1; then
+                PKG_BASE="$b"
+                break
+              fi
+            done
+          fi
+
           echo "PKG_BASE=${PKG_BASE}" >> "$GITHUB_ENV"
 
       - name: Delete versions per rules
+        if: steps.list.outputs.packages != ''
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
 
           kept="${KEEP_LATEST}"
           age_days="${OLDER_THAN_DAYS}"
 
+          urlenc() { jq -rn --arg v "$1" '$v|@uri'; }
+
+          # Small retry helper for transient 429/5xx
+          api_delete() {
+            local path="$1"
+            local attempt=0
+            local max=5
+            local delay=1
+            while :; do
+              if gh api -H "Accept: application/vnd.github+json" --method DELETE "$path"; then
+                return 0
+              fi
+              code=$?
+              attempt=$((attempt+1))
+              if [ $attempt -ge $max ]; then
+                return $code
+              fi
+              sleep $delay
+              delay=$((delay*2))
+            done
+          }
+
           while IFS= read -r pkg; do
+            [ -z "$pkg" ] && continue
             echo "::group::Deleting from package ${pkg}"
 
-            versions_json="$(gh api -H "Accept: application/vnd.github+json" --paginate "${PKG_BASE}/${pkg}/versions?per_page=100")"
+            pkg_enc="$(urlenc "$pkg")"
 
-            # Sort newest->oldest
+            # Get versions (newest->oldest)
+            versions_json="$(gh api -H "Accept: application/vnd.github+json" --paginate "${PKG_BASE}/${pkg_enc}/versions?per_page=100")" || {
+              # If this 404s, try re-detecting PKG_BASE for this package
+              cand_bases=(
+                "/users/${OWNER}/packages/container"
+                "/user/packages/container"
+                "/orgs/${OWNER}/packages/container"
+              )
+              for b in "${cand_bases[@]}"; do
+                if gh api -H "Accept: application/vnd.github+json" "${b}/${pkg_enc}/versions?per_page=1" >/dev/null 2>&1; then
+                  PKG_BASE="$b"
+                  break
+                fi
+              done
+              versions_json="$(gh api -H "Accept: application/vnd.github+json" --paginate "${PKG_BASE}/${pkg_enc}/versions?per_page=100")"
+            }
+
             versions_sorted="$(echo "${versions_json}" | jq -r '
               sort_by(.created_at) | reverse |
-              map({
-                id: .id,
-                created_at: .created_at,
-                tags: (.metadata.container.tags // [])
-              })
+              map({ id: .id, created_at: .created_at, tags: (.metadata.container.tags // []) })
             ')"
 
             total=$(echo "${versions_sorted}" | jq 'length')
 
-            # Compute candidate list (skip first N by position; optionally filter by age)
             to_delete="$(echo "${versions_sorted}" | jq --argjson keep ${kept} --argjson age_days ${age_days} -r '
               def too_old($d):
                 if $d == 0 then true
-                else
-                  now as $N | .created_at as $C |
-                  ( ( ( ( $N | fromdateiso8601 ) - ( $C | fromdateiso8601 ) ) / 86400 ) | floor ) >= $d
+                else ((now - (.created_at | fromdateiso8601)) / 86400 | floor) >= $d
                 end;
-
               to_entries
               | map(select(.key >= $keep))
-              | map(select( ( $age_days == 0 ) or ( .value | too_old($age_days) ) ))
+              | map(select( ($age_days == 0) or ( .value | too_old($age_days) ) ))
               | map(.value)
             ')"
 
@@ -227,19 +296,18 @@ jobs:
             if [ "${del_count}" -gt 0 ]; then
               echo "${to_delete}" | jq -r '.[].id' | while read -r vid; do
                 echo "DELETE version id=${vid}"
-                gh api -H "Accept: application/vnd.github+json" \
-                  --method DELETE "${PKG_BASE}/${pkg}/versions/${vid}" || {
-                    echo "WARN: Failed to delete version id=${vid} (continuing)"; }
+                if ! api_delete "${PKG_BASE}/${pkg_enc}/versions/${vid}"; then
+                  echo "WARN: Failed to delete version id=${vid} (continuing)"
+                fi
               done
             fi
 
-            # If keep_latest == 0 and older_than_days == 0, that means delete ALL versions.
-            # After all versions are deleted, also delete the empty package (optional but cleaner).
+            # If nuking everything, also remove the (now empty) package
             if [ "${kept}" -eq 0 ] && [ "${age_days}" -eq 0 ]; then
               echo "All versions removed; deleting empty package ${pkg}..."
-              gh api -H "Accept: application/vnd.github+json" \
-                --method DELETE "${PKG_BASE}/${pkg}" || {
-                  echo "WARN: Failed to delete package ${pkg} (might still have versions or be locked)"; }
+              if ! api_delete "${PKG_BASE}/${pkg_enc}"; then
+                echo "WARN: Failed to delete package ${pkg} (may still have versions or be protected)"
+              fi
             fi
 
             echo "::endgroup::"
