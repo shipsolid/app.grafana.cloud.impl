@@ -1,6 +1,84 @@
-# Fake Store Ingestor
+# Grafana Cloud Implementations
 
-## Runbook
+## Put secrets in GitHub → Settings → Secrets and variables → Actions
+
+**Create .NET OTEL Instrumentation**:
+OpenTelemetry instrumentation is the recommended standard to observe applications with Grafana Cloud.
+This integration helps you set up the Grafana Agent and .NET auto-instrumentation to send telemetry to Grafana Cloud.
+
+Scope(dotnet):
+set:alloy-data-write
+  metrics:write
+  logs:write
+  traces:write
+  profiles:write
+  fleet-management:read
+
+- GRAFANA_OTLP_ENDPOINT
+- GRAFANA_OTLP_USERNAME
+- GRAFANA_OTLP_PASSWORD
+
+**Create Hosted Prometheus metrics(Standard via Grafana Alloy)**:
+Your Grafana Cloud stack includes a massively scalable, high-performance, and highly available Prometheus endpoint.
+Bring together the raw, unsampled metrics for all your applications and infrastructure, spread around the globe, in one place
+with 13-months retention (Pro).
+
+- GRAFANA_RW_URL
+- GRAFANA_RW_USERNAME
+- GRAFANA_RW_PASSWORD
+
+If you run Alloy/your collector directly in a step:
+
+```yml
+- name: Run Alloy with secrets
+  env:
+    GRAFANA_OTLP_USERNAME: ${{ secrets.GRAFANA_OTLP_USERNAME }}
+    GRAFANA_OTLP_PASSWORD: ${{ secrets.GRAFANA_OTLP_PASSWORD }}
+    GRAFANA_RW_USERNAME:   ${{ secrets.GRAFANA_RW_USERNAME }}
+    GRAFANA_RW_PASSWORD:   ${{ secrets.GRAFANA_RW_PASSWORD }}
+    # optional if you env-ified URLs
+    GRAFANA_OTLP_ENDPOINT: https://otlp-gateway-prod-ca-east-0.grafana.net/otlp
+    GRAFANA_RW_URL:        https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push
+  run: |
+    ./alloy --server.http.listen-addr=0.0.0.0:12345 \
+            --config.file=./path/to/your.river
+
+```
+
+If you run it in Docker:
+
+```yml
+- name: Run Alloy container
+  run: |
+    docker run -d --name alloy --network host \
+      -e GRAFANA_OTLP_USERNAME='${{ secrets.GRAFANA_OTLP_USERNAME }}' \
+      -e GRAFANA_OTLP_PASSWORD='${{ secrets.GRAFANA_OTLP_PASSWORD }}' \
+      -e GRAFANA_RW_USERNAME='${{ secrets.GRAFANA_RW_USERNAME }}' \
+      -e GRAFANA_RW_PASSWORD='${{ secrets.GRAFANA_RW_PASSWORD }}' \
+      -e GRAFANA_OTLP_ENDPOINT='https://otlp-gateway-prod-ca-east-0.grafana.net/otlp' \
+      -e GRAFANA_RW_URL='https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push' \
+      -v "$GITHUB_WORKSPACE/path/to/your.river:/etc/alloy/config.river:ro" \
+      grafana/alloy:latest \
+      --config.file=/etc/alloy/config.river
+
+```
+
+Local Export envs before running:
+
+```sh
+export GRAFANA_OTLP_USERNAME=116
+export GRAFANA_OTLP_PASSWORD=glc_...
+export GRAFANA_RW_USERNAME=224
+export GRAFANA_RW_PASSWORD=glc_...
+# optional:
+export GRAFANA_OTLP_ENDPOINT=https://otlp-gateway-prod-ca-east-0.grafana.net/otlp
+export GRAFANA_RW_URL=https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push
+
+./alloy --config.file=./config.river
+
+```
+
+## Fake Store Ingestor Runbook
 
 ### Create the project & add packages
 
@@ -123,82 +201,46 @@ services:
 
 ```
 
-# Grafana Cloud
+## Image deletion from ghcr.io `.github/workflows/ghcr-cleanup.yml`
 
-Put secrets in GitHub → Settings → Secrets and variables → Actions
+Below is a **two-stage GitHub Actions workflow** that:
 
-**Create .NET OTEL Instrumentation**:
-OpenTelemetry instrumentation is the recommended standard to observe applications with Grafana Cloud.
-This integration helps you set up the Grafana Agent and .NET auto-instrumentation to send telemetry to Grafana Cloud.
+1. **Previews** what would be deleted (packages & versions), and
+2. **Deletes** only if you explicitly confirm via `workflow_dispatch` inputs.
 
-Scope(dotnet):
-set:alloy-data-write
-  metrics:write
-  logs:write
-  traces:write
-  profiles:write
-  fleet-management:read
+It supports **user or org scope**, optional **package name filter**, **dry-run**, **keep N latest versions**, and **older-than (days)** pruning. Uses a PAT (`GHCR_TOKEN`) with `read:packages` + `delete:packages`.
 
-- GRAFANA_OTLP_ENDPOINT
-- GRAFANA_OTLP_USERNAME
-- GRAFANA_OTLP_PASSWORD
+---
 
-**Create Hosted Prometheus metrics(Standard via Grafana Alloy)**:
-Your Grafana Cloud stack includes a massively scalable, high-performance, and highly available Prometheus endpoint.
-Bring together the raw, unsampled metrics for all your applications and infrastructure, spread around the globe, in one place
-with 13-months retention (Pro).
+### How to use it
 
-- GRAFANA_RW_URL
-- GRAFANA_RW_USERNAME
-- GRAFANA_RW_PASSWORD
+1. Create a PAT with **`read:packages`** and **`delete:packages`** → save it as repo/org secret **`GHCR_TOKEN`**.
 
-If you run Alloy/your collector directly in a step:
+2. Commit the workflow.
 
-```yml
-- name: Run Alloy with secrets
-  env:
-    GRAFANA_OTLP_USERNAME: ${{ secrets.GRAFANA_OTLP_USERNAME }}
-    GRAFANA_OTLP_PASSWORD: ${{ secrets.GRAFANA_OTLP_PASSWORD }}
-    GRAFANA_RW_USERNAME:   ${{ secrets.GRAFANA_RW_USERNAME }}
-    GRAFANA_RW_PASSWORD:   ${{ secrets.GRAFANA_RW_PASSWORD }}
-    # optional if you env-ified URLs
-    GRAFANA_OTLP_ENDPOINT: https://otlp-gateway-prod-ca-east-0.grafana.net/otlp
-    GRAFANA_RW_URL:        https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push
-  run: |
-    ./alloy --server.http.listen-addr=0.0.0.0:12345 \
-            --config.file=./path/to/your.river
+3. Run **“GHCR Cleanup (Preview & Delete)”** from **Actions → Run workflow**:
 
-```
+   - Set:
+     - `scope`: `user` or `org`
+     - `owner`: your username or org name
+     - `package_filter` (optional substring, e.g., `fakestore-`)
+     - `keep_latest` (e.g., `2` to always keep two newest)
+     - `older_than_days` (e.g., `14` to delete only if 14+ days old)
+     - `dry_run`: `true` to preview
+   - Check the **job summary** and the **PREVIEW\.md artifact**.
 
-If you run it in Docker:
+4. When satisfied, re-run with:
 
-```yml
-- name: Run Alloy container
-  run: |
-    docker run -d --name alloy --network host \
-      -e GRAFANA_OTLP_USERNAME='${{ secrets.GRAFANA_OTLP_USERNAME }}' \
-      -e GRAFANA_OTLP_PASSWORD='${{ secrets.GRAFANA_OTLP_PASSWORD }}' \
-      -e GRAFANA_RW_USERNAME='${{ secrets.GRAFANA_RW_USERNAME }}' \
-      -e GRAFANA_RW_PASSWORD='${{ secrets.GRAFANA_RW_PASSWORD }}' \
-      -e GRAFANA_OTLP_ENDPOINT='https://otlp-gateway-prod-ca-east-0.grafana.net/otlp' \
-      -e GRAFANA_RW_URL='https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push' \
-      -v "$GITHUB_WORKSPACE/path/to/your.river:/etc/alloy/config.river:ro" \
-      grafana/alloy:latest \
-      --config.file=/etc/alloy/config.river
+- `dry_run = false`
+- `confirm_delete = YES-DELETE`
 
-```
+---
 
-Local Export envs before running:
+### Common patterns
 
-```sh
-export GRAFANA_OTLP_USERNAME=116
-export GRAFANA_OTLP_PASSWORD=glc_...
-export GRAFANA_RW_USERNAME=224
-export GRAFANA_RW_PASSWORD=glc_...
-# optional:
-export GRAFANA_OTLP_ENDPOINT=https://otlp-gateway-prod-ca-east-0.grafana.net/otlp
-export GRAFANA_RW_URL=https://prometheus-prod-32-prod-ca-east-0.grafana.net/api/prom/push
+- **Delete everything (nuclear):** `keep_latest=0`, `older_than_days=0`, `package_filter=""`, `dry_run=false`, `confirm_delete=YES-DELETE`.
+- **Keep latest N, remove older ones:** `keep_latest=3`, `older_than_days=0`.
+- **Only clean stale stuff:** `keep_latest=0`, `older_than_days=30` (removes versions older than 30 days; keeps newer ones).
+- **Target a family:** set `package_filter="myapp-"`.
 
-./alloy --config.file=./config.river
-
-```
+If you want, I can tailor defaults for **your org/user** and add **branch protections** so only admins can run the delete job.
