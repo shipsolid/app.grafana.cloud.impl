@@ -136,6 +136,7 @@ jobs:
             cat PREVIEW.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "_No preview generated._" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   delete:
     name: Delete (requires confirm & not dry-run)
