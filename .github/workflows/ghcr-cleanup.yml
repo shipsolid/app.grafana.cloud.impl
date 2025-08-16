@@ -57,7 +57,11 @@ jobs:
       PKG_FILTER: ${{ inputs.package_filter }}
       KEEP_LATEST: ${{ inputs.keep_latest }}
       OLDER_THAN_DAYS: ${{ inputs.older_than_days }}
+
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Verify gh and jq present
         run: |
           gh --version
