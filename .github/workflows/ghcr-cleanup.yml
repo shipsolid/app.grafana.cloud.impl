@@ -42,6 +42,8 @@ on:
   push:
     paths:
       - '.github/workflows/ghcr-cleanup.yml'
+      - '.github/scripts/list_container_packages.sh'
+      - '.github/scripts/build_preview.sh'
 
 permissions:
   contents: read
