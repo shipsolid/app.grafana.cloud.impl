@@ -32,7 +32,6 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # cp ${{ matrix.config }} config.alloy
       - name: Dockerize
         run: |
           docker buildx build --push -t ghcr.io/${{ github.repository_owner }}/fakestore-mock:latest .
