@@ -5,18 +5,73 @@ set -euo pipefail
 command -v gh >/dev/null || { echo "gh CLI is required"; exit 1; }
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 
-# Inputs via env (use defaults for set -u safety)
-GH_TOKEN="${GH_TOKEN:?GH_TOKEN not set}"           # PAT with read:packages
+# Inputs (safe defaults for set -u)
+GH_TOKEN="${GH_TOKEN:?GH_TOKEN not set}"      # PAT with read:packages
 SCOPE="${SCOPE:-}"
 OWNER="${OWNER:-}"
 PKG_FILTER="${PKG_FILTER:-}"
-KEEP_LATEST="${KEEP_LATEST:-0}"                    # integer
-OLDER_THAN_DAYS="${OLDER_THAN_DAYS:-0}"            # integer
-PKG_BASE="${PKG_BASE:-}"                           # e.g. /users/<login>/packages/container, /orgs/<org>/packages/container
+KEEP_LATEST="${KEEP_LATEST:-0}"                # integer
+OLDER_THAN_DAYS="${OLDER_THAN_DAYS:-0}"        # integer
+PKG_BASE="${PKG_BASE:-}"                       # may be wrong; we validate below
 
-# Packages source:
-# - Prefer packages.txt created by the list step
-# - Fallback to PACKAGES (multiline) env if provided
+# ---- helpers ---------------------------------------------------------------
+
+detect_pkg_base() {
+  # Detect a valid base path for the given package using this token
+  local pkg="$1"
+  local owner_login="${OWNER:-}"
+  local candidates=(
+    "/users/${owner_login}/packages/container"
+    "/user/packages/container"
+    "/orgs/${owner_login}/packages/container"
+  )
+  for base in "${candidates[@]}"; do
+    # Skip candidates that have empty owner where required
+    if [[ "$base" =~ ^/users/|^/orgs/ ]] && [[ -z "${owner_login}" ]]; then
+      continue
+    fi
+    if gh api -H "Accept: application/vnd.github+json" \
+         "${base}/${pkg}/versions?per_page=1" >/dev/null 2>&1; then
+      echo "$base"
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_or_detect_pkg_base() {
+  # If PKG_BASE is empty or invalid, detect using the first package
+  local first_pkg="$1"
+  if [[ -n "${PKG_BASE}" ]]; then
+    if gh api -H "Accept: application/vnd.github+json" \
+         "${PKG_BASE}/${first_pkg}/versions?per_page=1" >/dev/null 2>&1; then
+      echo "Using provided PKG_BASE=${PKG_BASE}"
+      return 0
+    fi
+    echo "Provided PKG_BASE appears invalid for '${first_pkg}', re-detecting…" >&2
+  else
+    echo "PKG_BASE not provided; detecting…" >&2
+  fi
+
+  local detected
+  if detected="$(detect_pkg_base "${first_pkg}")"; then
+    PKG_BASE="${detected}"
+    echo "Detected PKG_BASE=${PKG_BASE}"
+    return 0
+  else
+    echo "ERROR: Could not determine PKG_BASE for '${first_pkg}'" >&2
+    return 1
+  fi
+}
+
+fetch_versions_json() {
+  local pkg="$1"
+  gh api -H "Accept: application/vnd.github+json" --paginate \
+     "${PKG_BASE}/${pkg}/versions?per_page=100"
+}
+
+# ---- load packages ---------------------------------------------------------
+
 if [[ -s "packages.txt" ]]; then
   mapfile -t PACKAGES < packages.txt
 elif [[ -n "${PACKAGES:-}" ]]; then
@@ -27,7 +82,8 @@ else
   exit 0
 fi
 
-# Header
+# ---- header ----------------------------------------------------------------
+
 {
   echo "# GHCR Cleanup Preview"
   echo "- Scope: ${SCOPE}"
@@ -38,14 +94,35 @@ fi
   echo ""
 } > PREVIEW.md
 
-# Iterate packages
+# ---- ensure PKG_BASE is valid ---------------------------------------------
+
+first_pkg="${PACKAGES[0]}"
+validate_or_detect_pkg_base "${first_pkg}" || exit 1
+
+# ---- per-package loop ------------------------------------------------------
+
 for pkg in "${PACKAGES[@]}"; do
   [[ -z "${pkg}" ]] && continue
-
   echo "Processing package: ${pkg}"
 
-  # Fetch all versions (paginated)
-  versions_json="$(gh api -H "Accept: application/vnd.github+json" --paginate "${PKG_BASE}/${pkg}/versions?per_page=100")"
+  # Try with current PKG_BASE
+  if ! versions_json="$(fetch_versions_json "${pkg}")"; then
+    # Retry once with re-detect (handles edge cases)
+    echo "WARN: ${PKG_BASE}/${pkg}/versions 404; re-detecting base for this package…" >&2
+    if PKG_BASE="$(detect_pkg_base "${pkg}")"; then
+      echo "Re-detected PKG_BASE=${PKG_BASE}"
+      versions_json="$(fetch_versions_json "${pkg}")"
+    else
+      echo "ERROR: Could not access versions for '${pkg}' — skipping." >&2
+      {
+        echo "## Package: \`${pkg}\`"
+        echo "- Total versions: 0"
+        echo "- Versions selected to delete: 0"
+        echo ""
+      } >> PREVIEW.md
+      continue
+    fi
+  fi
 
   # Sort newest->oldest and reduce fields
   versions_sorted="$(echo "${versions_json}" | jq -r '
@@ -58,15 +135,12 @@ for pkg in "${PACKAGES[@]}"; do
   ')"
 
   total="$(echo "${versions_sorted}" | jq 'length')"
-
   {
     echo "## Package: \`${pkg}\`"
     echo "- Total versions: ${total}"
   } >> PREVIEW.md
 
-  # Compute candidates to delete:
-  # - Skip first KEEP_LATEST entries (keep newest by position)
-  # - If OLDER_THAN_DAYS > 0, only include versions whose age >= OLDER_THAN_DAYS
+  # Compute deletion candidates (keep-first N; then optional age filter)
   to_delete="$(echo "${versions_sorted}" | jq --argjson keep "${KEEP_LATEST}" --argjson age "${OLDER_THAN_DAYS}" '
     def too_old($days):
       if $days == 0 then true
@@ -74,7 +148,7 @@ for pkg in "${PACKAGES[@]}"; do
       end;
 
     to_entries
-    | map(select(.key >= $keep))                 # drop the first N (keep latest)
+    | map(select(.key >= $keep))
     | map(select( ($age == 0) or ( .value | too_old($age) ) ))
     | map(.value)
   ')"
