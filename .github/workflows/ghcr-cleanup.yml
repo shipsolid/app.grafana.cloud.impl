@@ -101,11 +101,11 @@ jobs:
           echo "== Who am I (token owner)?"
           gh api /user --jq '.login'
 
-          echo "== Try listing as USER (replace $USER_NAME)"
+          echo "== Try listing as USER"
           USER_NAME=$(gh api /user --jq .login)
           gh api "/users/${USER_NAME}/packages?package_type=container" --jq '.[].name' || echo "User list failed"
 
-          echo "== Try listing as ORG (replace $ORG_NAME)"
+          echo "== Try listing as ORG"
           ORG_NAME=$(gh api /user --jq .id)
           gh api "/orgs/${ORG_NAME}/packages?package_type=container" --jq '.[].name' || echo "Org list failed"
 
